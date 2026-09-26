@@ -1,0 +1,36 @@
+gateway_home = "~/Applications/IB Gateway 10.44"
+state_dir = "~/.local/share/ibkr-gateway-rs"
+# Optional existing tradebus integration:
+# tradebus_events = "~/zen/tradebus/events"
+
+[instances.paper]
+enabled = false
+mode = "paper"
+api_port = 4002
+monitor_client_id = 19761
+expected_accounts = ["PAPERACCOUNT"]
+api_orders = true
+auto_restart_time = "23:45"
+
+[instances.live]
+enabled = false
+mode = "live"
+api_port = 4001
+monitor_client_id = 19762
+expected_accounts = ["LIVEACCOUNT"]
+api_orders = true
+auto_restart_time = "23:50"
+
+[recovery]
+check_interval_secs = 10
+failure_threshold = 3
+startup_timeout_secs = 90
+restart_grace_secs = 300
+native_shutdown_timeout_secs = 120
+session_resume_timeout_secs = 120
+mfa_timeout_secs = 300
+ui_stall_timeout_secs = 120
+backoff_initial_secs = 60
+backoff_max_secs = 600
+max_restarts = 10
+healthy_reset_secs = 300
