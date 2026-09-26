@@ -1,0 +1,38 @@
+[package]
+name = "gatewayctl"
+version = "0.1.0"
+edition = "2021"
+publish = false
+build = "build.rs"
+description = "Isolated macOS IB Gateway supervision and in-process login automation"
+license = "MIT"
+repository = "https://github.com/ArtixZ/ibkr-gateway-rs"
+
+[dependencies]
+anyhow = "1"
+base64 = "0.22"
+clap = { version = "4", features = ["derive"] }
+libc = "0.2"
+ibapi = "4.2"
+getrandom = "0.3"
+roxmltree = "0.20"
+rpassword = "7"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+shlex = "1"
+time = { version = "0.3", features = ["formatting", "local-offset", "macros"] }
+tokio = { version = "1", features = ["rt", "macros", "net", "process", "signal", "time", "io-util", "sync"] }
+toml = "0.8"
+zeroize = { version = "1", features = ["serde"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = "3"
+
+[dev-dependencies]
+tempfile = "3"
+prost = "0.14"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
