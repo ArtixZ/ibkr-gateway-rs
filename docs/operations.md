@@ -9,16 +9,16 @@ IB Gateway 10.44 UI, and API server version 213. The health client requires
 server version 213 or newer, but a newer API version alone does not establish
 launcher or UI compatibility.
 
-The application is not a headless replacement for Gateway. Keep macOS powered,
-awake, and logged into a GUI session. A background or SSH shell may lack
+Gateway requires a GUI session. Keep macOS powered, awake, and logged in.
+A background or SSH shell may lack
 WindowServer access even when a GUI session exists; LaunchAgents run in the
 user's Aqua domain. The installer does not change power settings, disable
 authentication, or install a root daemon.
 
 The Rust controller places no orders. Its checks are not a trading-safety
 boundary: connected clients can submit real orders when live API access is
-enabled. Pause dependent clients during initial setup, account changes, and
-migration until identity and readiness have been verified.
+enabled. Pause dependent clients during initial setup and account changes
+until identity and readiness have been verified.
 
 ## Configuration
 
@@ -64,7 +64,7 @@ credential pair per instance. Unattended reads cannot display Keychain
 permission prompts; a locked Keychain or missing access produces an explicit
 intervention state.
 
-For migration, pipe a private secret provider's JSON object with `username`
+To load credentials from a secret provider, pipe a JSON object with `username`
 and `password` fields into `gatewayctl credentials --instance paper --stdin`.
 Do not put secrets in command arguments, shell history, or source files.
 
@@ -156,7 +156,7 @@ needed; they remain sensitive.
 Fatal errors before instance logging is available go to macOS system logging
 under `gatewayctl`.
 
-Notifications are optional. `tradebus_events` enables the existing tradebus
+Notifications are optional. `tradebus_events` enables the tradebus
 integration by pointing at its event directory; tradebus is not required to
 run the controller and is not installed by it. Without a notification
 integration, monitor status and logs yourself.
@@ -164,25 +164,6 @@ integration, monitor status and logs yourself.
 Session incidents and liveness signals use separate paper/live identities.
 Routine restart progress does not clear an outage; verified readiness does.
 Failed deliveries remain visible and pending transitions are retried.
-
-## Migration and rollback
-
-The original Python monitor uses broad process-name matching and can kill new
-Gateways even when their ports differ. `gatewayctl` refuses to start while
-`com.ibkr.monitor` is loaded or its original LaunchAgent plist remains installed.
-This recognizes that specific job, not every possible process manager.
-
-1. Inventory other launchers and pause dependent API clients.
-2. Unload the legacy monitor and move its plist out of `~/Library/LaunchAgents`
-   into a private rollback location.
-3. Stop the relevant old Gateway, preserving configuration backups.
-4. Verify the new paper instance, then live, including account identity,
-   native restart, and client reconnection.
-5. Enable dependent clients only after their corresponding instance is ready.
-
-For rollback, stop/uninstall the new services before restoring the old monitor.
-Never run its broad stop logic while a new live Gateway is operating. Original
-user files are not automatically deleted.
 
 ## Validation
 
@@ -208,15 +189,12 @@ Gateway is not packaged in the production bridge.
 Real deployment still needs qualification against the installed Gateway and
 actual client workloads. Do not submit real orders as automated tests. Compare
 controller overhead separately from Gateway using identical versions, account
-counts, and workloads; a Rust rewrite cannot remove two Gateways' JVM memory.
+counts, and workloads; each Gateway retains its own JVM memory overhead.
 
 ## Publication boundaries
 
-This project's original code is [MIT-licensed](../LICENSE).
-[IBC](https://github.com/IbcAlpha/IBC) was a reference during development and
-remains separately [GPL-3.0-or-later](https://github.com/IbcAlpha/IBC/blob/3.23.0/LICENSE.txt).
-These are separate projects; third-party source and dependencies retain their
-own terms.
+This project is [MIT-licensed](../LICENSE). Third-party dependencies and IBKR
+software retain their own terms.
 
 Obtain Gateway and its JVM from IBKR's authorized distribution. Do not publish
 vendor installers, JARs, native launchers, copied per-instance installations,

@@ -13,11 +13,11 @@ Isolated paper/live sessions. Keychain credentials. Native restart recovery.
 </div>
 
 `gatewayctl` combines a small Rust supervisor with a Java agent inside each
-Gateway JVM. It replaces the IBC/monitor layer without adding another JVM,
+Gateway JVM. It manages paper and live sessions without adding another JVM,
 container, or API proxy. Trading applications keep using the standard TWS API.
 
-> **Unofficial and experimental.** Not affiliated with Interactive Brokers or
-> IBC. Start with paper trading. Live API clients can trade real money, and
+> **Unofficial and experimental.** Not affiliated with Interactive Brokers.
+> Start with paper trading. Live API clients can trade real money, and
 > broker-required MFA still needs your approval.
 
 ## What you get
@@ -115,7 +115,7 @@ expired tokens, and broker security checks may still require MFA. Unknown
 dialogs and session conflicts pause automation rather than force a takeover.
 
 **[Operations guide](docs/operations.md)** covers Keychain updates, enrollment,
-service removal, logs, troubleshooting, and migration from IBC.
+service removal, logs, and troubleshooting.
 
 ## Development
 
@@ -133,7 +133,5 @@ submit real orders.
 
 ## License
 
-[MIT](LICENSE) for this project's original code. [IBC](https://github.com/IbcAlpha/IBC)
-was a reference during development and remains separately GPL-licensed.
-IBKR software is **not bundled**; its terms and dependency licenses remain
-separate. See [publication boundaries](docs/operations.md#publication-boundaries).
+[MIT](LICENSE). IBKR software is **not bundled**; its terms and dependency
+licenses remain separate. See [publication boundaries](docs/operations.md#publication-boundaries).
