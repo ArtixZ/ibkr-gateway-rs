@@ -47,6 +47,12 @@ enum Action {
         /// Recreate this application's own item after an executable signing-identity change.
         #[arg(long)]
         replace: bool,
+        /// Authorize this executable to read an existing item without re-entering or replacing credentials.
+        #[arg(long, conflicts_with_all = ["stdin", "replace", "check_access"])]
+        authorize: bool,
+        /// Verify existing credentials can be read without any Keychain UI.
+        #[arg(long, conflicts_with_all = ["stdin", "replace", "authorize"])]
+        check_access: bool,
     },
     /// Replace one profile from piped JSON; validates before saving private configuration.
     Configure {
@@ -199,14 +205,37 @@ async fn execute(cli: Cli) -> Result<()> {
             instance,
             stdin,
             replace,
+            authorize,
+            check_access,
         } => {
             config.instance(&instance)?;
-            if stdin {
+            if authorize {
+                credentials::authorize(&instance)?;
+                let verification = tokio::time::timeout(
+                    Duration::from_secs(15),
+                    tokio::process::Command::new(std::env::current_exe()?)
+                        .arg("--config")
+                        .arg(&path)
+                        .args(["credentials", "--instance", &instance, "--check-access"])
+                        .stdin(std::process::Stdio::null())
+                        .kill_on_drop(true)
+                        .output(),
+                )
+                .await
+                .context("fresh-process Keychain verification timed out")??;
+                ensure!(verification.status.success(),
+                    "unattended Keychain access is still denied in a fresh process; grant persistent access to this executable, not all applications");
+                println!("Existing Keychain access verified for {instance}; credentials were not displayed or replaced.");
+            } else if check_access {
+                drop(credentials::load(&instance)?);
+                println!("Unattended Keychain access verified for {instance}.");
+            } else if stdin {
                 credentials::import_stdin(&instance, replace)?;
+                println!("Credentials stored in macOS Keychain for {instance}.");
             } else {
                 credentials::set(&instance, replace)?;
+                println!("Credentials stored in macOS Keychain for {instance}.");
             }
-            println!("Credentials stored in macOS Keychain for {instance}.");
         }
         Action::Configure { instance, stdin: _ } => {
             config.instance(&instance)?;

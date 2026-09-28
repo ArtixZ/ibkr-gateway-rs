@@ -555,6 +555,7 @@ impl Supervisor {
                 self.state.profile = self.config.instance(&self.name)?.clone();
                 self.state.desired_running = true;
                 self.state.restarts = 0;
+                self.state.login_recovery_attempts = 0;
                 self.state.backoff_until_unix = 0;
                 self.next_start = Instant::now();
                 self.failures = 0;
@@ -1169,8 +1170,27 @@ impl Supervisor {
                         self.transition(Phase::NeedsAttention, &fields[2], true)?
                     }
                     "resume_login_required" => {
-                        self.cold_restart("native_session_requires_fresh_credentials")
-                            .await?
+                        let reason = if fields[2] == "broker_connection_requires_fresh_login" {
+                            if self.state.login_recovery_attempts
+                                >= self.config.recovery.max_restarts.min(3)
+                            {
+                                self.transition(
+                                    Phase::NeedsAttention,
+                                    "connection_login_retry_limit",
+                                    true,
+                                )?;
+                                return Ok(());
+                            }
+                            self.state.login_recovery_attempts += 1;
+                            "broker_connection_requires_fresh_login"
+                        } else {
+                            "native_session_requires_fresh_credentials"
+                        };
+                        self.cold_restart(reason).await?
+                    }
+                    "connection_lost" => {
+                        self.transition(Phase::Reconnecting, "broker_server_disconnected", false)?;
+                        self.next_probe = Instant::now();
                     }
                     "configured_readonly" | "configured_writable" => {
                         if self.enrollment.is_some() && phase == "configured_writable" {
@@ -1373,9 +1393,10 @@ impl Supervisor {
             && self
                 .healthy_since
                 .is_some_and(|t| t.elapsed().as_secs() >= self.config.recovery.healthy_reset_secs)
-            && self.state.restarts != 0
+            && (self.state.restarts != 0 || self.state.login_recovery_attempts != 0)
         {
             self.state.restarts = 0;
+            self.state.login_recovery_attempts = 0;
             self.save()?;
         }
         if now >= self.next_probe && self.probe.is_none() {
@@ -1473,6 +1494,80 @@ async fn native_output(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn known_connection_notice_keeps_native_recovery_available() {
+        let mut f = fixture();
+        let owner = f.supervisor.state.owner.clone();
+        f.supervisor
+            .event(bridge("connection_lost", "broker_server_disconnected"))
+            .await
+            .unwrap();
+        assert_eq!(f.supervisor.state.phase, Phase::Reconnecting);
+        assert_eq!(f.supervisor.state.owner, owner);
+        assert_eq!(f.supervisor.state.restarts, 0);
+        assert!(f.supervisor.configured);
+    }
+
+    #[tokio::test]
+    async fn relogin_prompt_uses_bounded_fresh_login_without_reusing_session() {
+        let mut f = fixture();
+        f.supervisor.state.resume_session = Some("expired-session".into());
+        f.supervisor
+            .event(bridge(
+                "resume_login_required",
+                "broker_connection_requires_fresh_login",
+            ))
+            .await
+            .unwrap();
+        assert_eq!(f.supervisor.state.phase, Phase::BackingOff);
+        assert_eq!(
+            f.supervisor.state.reason,
+            "broker_connection_requires_fresh_login"
+        );
+        assert_eq!(f.supervisor.state.restarts, 1);
+        assert_eq!(f.supervisor.state.login_recovery_attempts, 1);
+        assert!(f.supervisor.state.owner.is_none());
+        assert!(f.supervisor.state.resume_session.is_none());
+    }
+
+    #[tokio::test]
+    async fn repeated_connection_logins_stop_before_exhausting_the_process_restart_budget() {
+        let mut f = fixture();
+        f.supervisor.state.login_recovery_attempts = 3;
+        f.supervisor
+            .event(bridge(
+                "resume_login_required",
+                "broker_connection_requires_fresh_login",
+            ))
+            .await
+            .unwrap();
+        assert_eq!(f.supervisor.state.phase, Phase::NeedsAttention);
+        assert_eq!(f.supervisor.state.reason, "connection_login_retry_limit");
+        assert_eq!(f.supervisor.state.restarts, 0);
+        assert!(f.child.try_wait().unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn connection_notice_cannot_clear_a_session_conflict_latch() {
+        let mut f = fixture();
+        f.supervisor
+            .transition(
+                Phase::NeedsAttention,
+                "authentication_or_session_conflict",
+                true,
+            )
+            .unwrap();
+        f.supervisor
+            .event(bridge("connection_lost", "broker_server_disconnected"))
+            .await
+            .unwrap();
+        assert_eq!(f.supervisor.state.phase, Phase::NeedsAttention);
+        assert_eq!(
+            f.supervisor.state.reason,
+            "authentication_or_session_conflict"
+        );
+    }
 
     #[tokio::test]
     async fn readonly_enrollment_pins_identity_before_handoff_without_enabling_orders() {

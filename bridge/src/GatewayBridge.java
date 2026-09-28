@@ -29,6 +29,8 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
+import java.util.stream.Collectors;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -444,7 +446,7 @@ public final class GatewayBridge {
         return content.toString().toLowerCase(Locale.ROOT);
     }
 
-    static String dialogText(Component root) {
+    private static String readOnlyDialogText(Component root) {
         StringBuilder result = new StringBuilder();
         for (Component component : components(root)) {
             String value = null;
@@ -464,8 +466,44 @@ public final class GatewayBridge {
                 break;
             }
         }
-        return result.toString().replaceAll("\\b(?:DU|U|DF|F)[0-9]+\\b", "[account]")
-                .replaceAll("\\b[0-9]{4,}\\b", "[number]");
+        return result.toString();
+    }
+
+    static String dialogText(Component root) {
+        return readOnlyDialogText(root).replaceAll("\\b(?:DU|U|DF|F)[0-9]+\\b", "[account]")
+                .replaceAll("(?i)(challenge|response|verification|security)\\s+code[^\\n]*",
+                        "[authentication code omitted]")
+                .replaceAll("(?<![\\w])[0-9](?:[ \\t-]*[0-9]){3,}(?![\\w])", "[number]");
+    }
+
+    enum ConnectionDialog {
+        NONE, RELOGIN_REQUIRED, SERVER_DISCONNECTED
+    }
+
+    static ConnectionDialog connectionDialog(String heading, Component root) {
+        String body = readOnlyDialogText(root).toLowerCase(Locale.ROOT).replaceAll("\\s+", " ");
+        if (List.of("another session", "existing session", "other session", "competing session",
+                "logged in elsewhere", "same user name", "same username", "invalid password",
+                "invalid username", "second factor", "security code", "verification code",
+                "challenge code", "response code", "passkey").stream().anyMatch(body::contains)) {
+            return ConnectionDialog.NONE;
+        }
+        Set<String> buttons = matching(root, AbstractButton.class).stream()
+                .filter(button -> root instanceof Window ? button.isShowing() : button.isVisible())
+                .map(button -> text(button.getText()).toLowerCase(Locale.ROOT))
+                .filter(label -> !label.isEmpty())
+                .collect(Collectors.toSet());
+        if (heading.equalsIgnoreCase("Re-login is required")
+                && body.contains("your connection was lost. would you like to re-login?")
+                && buttons.equals(Set.of("re-login", "cancel"))) {
+            return ConnectionDialog.RELOGIN_REQUIRED;
+        }
+        if ((heading.equalsIgnoreCase("IBKR Gateway") || heading.equalsIgnoreCase("IB Gateway"))
+                && body.contains("connection to server failed: server disconnected, please try again")
+                && buttons.equals(Set.of("ok"))) {
+            return ConnectionDialog.SERVER_DISCONNECTED;
+        }
+        return ConnectionDialog.NONE;
     }
 
     private static boolean mfaPrompt(Window window) {
@@ -650,6 +688,7 @@ public final class GatewayBridge {
                         return;
                     }
                     blocked = false;
+                    nativeShutdown = false;
                     enableOrders = false;
                     writable = false;
                     resetConfiguration();
@@ -686,7 +725,19 @@ public final class GatewayBridge {
         }
 
         void tick() {
+            for (Window window : Window.getWindows()) {
+                if (!window.isShowing()
+                        && "gatewayctl-connection-notice-accepted".equals(window.getName())) {
+                    window.setName(null);
+                }
+            }
             if (mode == null || (blocked && !stopping)) {
+                return;
+            }
+            if (!stopping && Arrays.stream(Window.getWindows()).filter(Component::isShowing)
+                    .anyMatch(window -> title(window).toLowerCase(Locale.ROOT).contains("existing session"))) {
+                blocked = true;
+                emit("needs_attention", "authentication_or_session_conflict");
                 return;
             }
             boolean challengeVisible = false;
@@ -777,6 +828,34 @@ public final class GatewayBridge {
                     blocked = true;
                     emit("needs_attention", "authentication_or_session_conflict");
                     return;
+                }
+                if (window instanceof JDialog dialog && dialog.isModal()) {
+                    ConnectionDialog recovery = connectionDialog(title(window), window);
+                    if (recovery != ConnectionDialog.NONE) {
+                        boolean challengeActive = mfa || Arrays.stream(Window.getWindows())
+                                .filter(Component::isShowing).anyMatch(GatewayBridge::mfaPrompt);
+                        if (challengeActive) {
+                            blocked = true;
+                            emit("needs_attention", "connection_lost_during_mfa");
+                        } else if (recovery == ConnectionDialog.RELOGIN_REQUIRED || !configured) {
+                            // Re-login can reclaim a competing session. A fresh supervised
+                            // login preserves the normal session-conflict and MFA checks.
+                            blocked = true;
+                            emit("resume_login_required", "broker_connection_requires_fresh_login");
+                        } else if (!"gatewayctl-connection-notice-accepted".equals(window.getName())) {
+                            AbstractButton acknowledge = button(window, "OK");
+                            if (acknowledge.isEnabled()) {
+                                window.setName("gatewayctl-connection-notice-accepted");
+                                emit("connection_lost", "broker_server_disconnected");
+                                SwingUtilities.invokeLater(() -> {
+                                    if (!blocked && window.isShowing() && acknowledge.isEnabled()) {
+                                        acknowledge.doClick();
+                                    }
+                                });
+                            }
+                        }
+                        return;
+                    }
                 }
                 if (window instanceof JDialog dialog && dialog.isModal()
                         && window != configuration

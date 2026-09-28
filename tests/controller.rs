@@ -186,6 +186,25 @@ fn relative_configuration_path_is_resolved_from_the_working_directory() {
 }
 
 #[test]
+fn keychain_authorization_does_not_combine_with_credential_replacement() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("config.toml");
+    fs::write(&config, include_str!("../config.example.toml")).unwrap();
+    for conflicting in ["--stdin", "--replace", "--check-access"] {
+        let result = command(&config)
+            .args([
+                "credentials",
+                "--instance",
+                "paper",
+                "--authorize",
+                conflicting,
+            ])
+            .output()
+            .unwrap();
+        assert_eq!(result.status.code(), Some(2));
+    }
+}
+#[test]
 fn first_run_service_requires_explicit_readonly_enrollment_opt_in() {
     let dir = tempfile::tempdir().unwrap();
     let config = dir.path().join("config.toml");

@@ -40,6 +40,7 @@ public final class GWClient {
     private static final AtomicInteger SAVES = new AtomicInteger();
     private static boolean validationShown;
     private static boolean restartNoticeShown;
+    private static JDialog connectionNotice;
 
     private GWClient() {}
 
@@ -120,6 +121,23 @@ public final class GWClient {
         frame.add(retainedLoginField, BorderLayout.SOUTH);
         frame.setSize(350, 120);
         frame.setVisible(true);
+        Timer connectionEvents = new Timer(100, event -> {
+            for (String kind : new String[] {"relogin", "notice", "conflict"}) {
+                Path trigger = settings.resolve("fixture-connection-" + kind);
+                if (Files.exists(trigger)) {
+                    try {
+                        Files.delete(trigger);
+                    } catch (IOException error) {
+                        throw new IllegalStateException("Cannot consume fixture connection event", error);
+                    }
+                    SwingUtilities.invokeLater(() -> connectionDialog(frame, kind));
+                }
+            }
+            if (!frame.isDisplayable()) {
+                ((Timer) event.getSource()).stop();
+            }
+        });
+        connectionEvents.start();
         boolean paper = System.getProperty("gatewayctl.fixture.mode", "paper").equals("paper");
         if (paper) {
             SwingUtilities.invokeLater(() -> {
@@ -157,6 +175,52 @@ public final class GWClient {
                 challenge.setVisible(true);
                 simulatedUser.stop();
         }
+    }
+
+    private static void connectionDialog(JFrame owner, String kind) {
+        if (kind.equals("notice") && connectionNotice != null) {
+            connectionNotice.setVisible(true);
+            return;
+        }
+        String title = switch (kind) {
+            case "relogin" -> "Re-login is required";
+            case "conflict" -> "Existing session detected";
+            default -> "IBKR Gateway";
+        };
+        JDialog dialog = new JDialog(owner, title, true);
+        if (kind.equals("notice")) {
+            connectionNotice = dialog;
+        }
+        String message = switch (kind) {
+            case "relogin" -> "Your connection was lost. Would you like to re-login?";
+            case "conflict" -> "Another session with the same user name already exists. Would you like to login and disconnect the other session?";
+            default -> "Connection to server failed: Server disconnected, please try again";
+        };
+        dialog.add(new JLabel(message), BorderLayout.CENTER);
+        JPanel actions = new JPanel();
+        String action = switch (kind) {
+            case "relogin" -> "Re-login";
+            case "conflict" -> "Reconnect This Session";
+            default -> "OK";
+        };
+        JButton button = new JButton(action);
+        button.addActionListener(event -> {
+            try {
+                Files.writeString(settings.resolve("fixture-connection-" + kind + "-clicked"), "clicked");
+            } catch (IOException error) {
+                throw new IllegalStateException("Cannot record fixture connection action", error);
+            }
+            SwingUtilities.invokeLater(dialog::dispose);
+        });
+        actions.add(button);
+        if (!kind.equals("notice")) {
+            JButton cancel = new JButton("Cancel");
+            cancel.addActionListener(event -> dialog.dispose());
+            actions.add(cancel);
+        }
+        dialog.add(actions, BorderLayout.SOUTH);
+        dialog.setSize(450, 140);
+        dialog.setVisible(true);
     }
 
     private static void configuration(JFrame owner) {
