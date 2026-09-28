@@ -46,6 +46,8 @@ pub struct State {
     pub owner: Option<Identity>,
     pub generation: String,
     pub restarts: u32,
+    #[serde(default)]
+    pub login_recovery_attempts: u32,
     pub profile: Instance,
     #[serde(default)]
     pub backoff_until_unix: i64,
@@ -72,6 +74,7 @@ impl State {
             owner: None,
             generation: String::new(),
             restarts: 0,
+            login_recovery_attempts: 0,
             profile,
             backoff_until_unix: 0,
             notification_pending: false,

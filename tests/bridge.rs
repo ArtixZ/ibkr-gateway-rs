@@ -479,3 +479,77 @@ async fn synthetic_gui_configuration_stall_is_explicit() {
     );
     gui.stop().await;
 }
+
+#[tokio::test]
+#[ignore = "requires Aqua; synthetic broker disconnect prompt"]
+async fn synthetic_gui_relogin_requests_supervised_login_without_reclaiming_a_session() {
+    let mut gui = Gui::new(GuiOptions::for_mode("paper")).await;
+    gui.login().await;
+    gui.state("configured_readonly").await;
+    gui.user_action("fixture-connection-relogin");
+    assert_eq!(
+        gui.state("resume_login_required").await[2],
+        "broker_connection_requires_fresh_login"
+    );
+    assert!(!gui
+        .settings
+        .join("fixture-connection-relogin-clicked")
+        .exists());
+    gui.stop().await;
+}
+
+#[tokio::test]
+#[ignore = "requires Aqua; synthetic informational server disconnect"]
+async fn synthetic_gui_server_disconnect_notice_does_not_latch_intervention() {
+    let mut gui = Gui::new(GuiOptions::for_mode("paper")).await;
+    gui.login().await;
+    gui.state("configured_readonly").await;
+    gui.user_action("fixture-connection-notice");
+    gui.state("connection_lost").await;
+    gui.await_file("fixture-connection-notice-clicked").await;
+    gui.state("configured_readonly").await;
+    std::fs::remove_file(gui.settings.join("fixture-connection-notice-clicked")).unwrap();
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+    gui.user_action("fixture-connection-notice");
+    gui.state("connection_lost").await;
+    gui.await_file("fixture-connection-notice-clicked").await;
+    gui.state("configured_readonly").await;
+    gui.stop().await;
+}
+
+#[tokio::test]
+#[ignore = "requires Aqua; synthetic competing session remains protected"]
+async fn synthetic_gui_existing_session_is_never_reclaimed_by_connection_recovery() {
+    let mut gui = Gui::new(GuiOptions::for_mode("paper")).await;
+    gui.login().await;
+    gui.state("configured_readonly").await;
+    gui.user_action("fixture-connection-conflict");
+    assert_eq!(
+        gui.state("needs_attention").await[2],
+        "authentication_or_session_conflict"
+    );
+    assert!(!gui
+        .settings
+        .join("fixture-connection-conflict-clicked")
+        .exists());
+    gui.stop().await;
+}
+
+#[tokio::test]
+#[ignore = "requires Aqua; connection recovery must not resubmit an MFA login"]
+async fn synthetic_gui_disconnect_during_mfa_does_not_start_another_login() {
+    let mut gui = Gui::new(GuiOptions::for_mode("live")).await;
+    gui.login().await;
+    gui.state("awaiting_mfa").await;
+    gui.user_action("fixture-connection-notice");
+    assert_eq!(
+        gui.state("needs_attention").await[2],
+        "connection_lost_during_mfa"
+    );
+    assert!(!gui
+        .settings
+        .join("fixture-connection-notice-clicked")
+        .exists());
+    assert!(!gui.settings.join("fixture-configuration-opened").exists());
+    gui.stop().await;
+}

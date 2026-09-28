@@ -79,6 +79,40 @@ public final class BridgeSelfTest {
             panel.add(new JPasswordField("sensitive-fixture-value"));
             check(!GatewayBridge.dialogText(panel).contains("sensitive-fixture-value"), "diagnostics exclude password fields");
             check(!GatewayBridge.dialogText(panel).contains("4002"), "diagnostics exclude text field values");
+            JPanel challenge = new JPanel();
+            challenge.add(new JLabel("Challenge code: 123 456"));
+            challenge.add(new JLabel("654-321"));
+            check(!GatewayBridge.dialogText(challenge).contains("123 456"), "segmented challenge is redacted");
+            check(!GatewayBridge.dialogText(challenge).contains("654-321"), "segmented number is redacted");
+            JPanel relogin = new JPanel();
+            relogin.add(new JLabel("Your connection was lost. Would you like to re-login?"));
+            relogin.add(new javax.swing.JButton("Re-login"));
+            relogin.add(new javax.swing.JButton("Cancel"));
+            check(GatewayBridge.connectionDialog("Re-login is required", relogin)
+                    == GatewayBridge.ConnectionDialog.RELOGIN_REQUIRED, "known relogin prompt");
+            JPanel splitRelogin = new JPanel();
+            splitRelogin.add(new JLabel("Your connection was lost."));
+            splitRelogin.add(new JLabel("Would you like to re-login?"));
+            splitRelogin.add(new javax.swing.JButton("Re-login"));
+            splitRelogin.add(new javax.swing.JButton("Cancel"));
+            check(GatewayBridge.connectionDialog("Re-login is required", splitRelogin)
+                    == GatewayBridge.ConnectionDialog.RELOGIN_REQUIRED, "multi-label relogin prompt");
+            relogin.add(new JLabel("Another session with the same user name already exists"));
+            check(GatewayBridge.connectionDialog("Re-login is required", relogin)
+                    == GatewayBridge.ConnectionDialog.NONE, "session conflict is not transient recovery");
+            JPanel disconnected = new JPanel();
+            disconnected.add(new JLabel("Connection to server failed: Server disconnected, please try again"));
+            disconnected.add(new javax.swing.JButton("OK"));
+            check(GatewayBridge.connectionDialog("IBKR Gateway", disconnected)
+                    == GatewayBridge.ConnectionDialog.SERVER_DISCONNECTED, "known server disconnect");
+            JLabel authentication = new JLabel("Security code: 123 456");
+            disconnected.add(authentication);
+            check(GatewayBridge.connectionDialog("IBKR Gateway", disconnected)
+                    == GatewayBridge.ConnectionDialog.NONE, "redaction must not hide authentication context from classification");
+            disconnected.remove(authentication);
+            disconnected.add(new javax.swing.JButton("Reconnect This Session"));
+            check(GatewayBridge.connectionDialog("IBKR Gateway", disconnected)
+                    == GatewayBridge.ConnectionDialog.NONE, "additional takeover action is not accepted");
             JMenuBar bar = new JMenuBar();
             JMenu menu = new JMenu("Configure");
             JMenuItem settings = new JMenuItem("Settings");

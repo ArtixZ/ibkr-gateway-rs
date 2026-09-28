@@ -64,6 +64,20 @@ credential pair per instance. Unattended reads cannot display Keychain
 permission prompts; a locked Keychain or missing access produces an explicit
 intervention state.
 
+After updating the executable, existing credentials can be authorized without
+re-entering or exporting them:
+
+```sh
+gatewayctl credentials --instance paper --authorize
+gatewayctl credentials --instance live --authorize
+```
+
+Run this in the user's GUI session and approve macOS Keychain access if asked.
+This verifies unattended access without displaying or replacing the stored
+pair, including a fresh-process check. Use persistent access for this
+executable and re-check the service afterward; a one-time permission may not
+apply to a future daemon run. It is a macOS permission prompt, not IBKR MFA.
+
 To load credentials from a secret provider, pipe a JSON object with `username`
 and `password` fields into `gatewayctl credentials --instance paper --stdin`.
 Do not put secrets in command arguments, shell history, or source files.
@@ -133,6 +147,8 @@ you accept its takeover prompt. See
 | Read-only login selected | Stop/start for a fresh login; `resume` cannot turn it into trading authority |
 | Keychain access failure | Re-provision access from the GUI session |
 | Unknown dialog or session conflict | Inspect and resolve it; no automatic takeover |
+| Server-disconnected information notice | Acknowledge the specific notice and continue checking broker recovery |
+| Connection-loss dialog requiring a new login | Use a bounded fresh-login attempt; do not click a session-reclaim button |
 | Supervisor unreachable | Inspect service errors; stale state is not reported as healthy |
 
 `gatewayctl restart --instance paper` requests a native restart, not an
@@ -144,6 +160,15 @@ A failed native restart pauses for inspection instead of discarding a
 potentially valid session. Broker disconnects and ambiguous API failures do not
 justify repeatedly killing a responsive JVM. Forced recovery of a stalled UI
 requires corroborating API failures.
+
+Known connection-loss dialogs must not latch the generic unknown-dialog
+intervention state and block the next native restart. A re-login-required
+prompt takes the ordinary fresh-login path, where session conflicts and MFA
+remain explicit. A disconnect while MFA is active pauses instead of submitting
+another login request. Consecutive connection-driven fresh logins stop after
+three attempts (or the configured process-restart limit if lower), until a
+stable healthy interval or an explicit operator resume. Other messages are
+still left for operator review.
 
 ## Logs and notifications
 

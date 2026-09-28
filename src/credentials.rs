@@ -28,10 +28,15 @@ impl Credentials {
 
 #[cfg(target_os = "macos")]
 pub fn load(instance: &str) -> Result<Credentials> {
-    use security_framework::passwords::get_generic_password;
     let _interaction =
         security_framework::os::macos::keychain::SecKeychain::disable_user_interaction()
             .context("disable Keychain prompts for unattended operation")?;
+    read_item(instance)
+}
+
+#[cfg(target_os = "macos")]
+fn read_item(instance: &str) -> Result<Credentials> {
+    use security_framework::passwords::get_generic_password;
     let bytes = Zeroizing::new(
         get_generic_password(SERVICE, instance)
             .context("Keychain item unavailable; run credentials in an interactive session")?,
@@ -44,6 +49,19 @@ pub fn load(instance: &str) -> Result<Credentials> {
         "empty Keychain credentials"
     );
     Ok(credentials)
+}
+
+#[cfg(target_os = "macos")]
+pub fn authorize(instance: &str) -> Result<()> {
+    ensure!(
+        security_framework::os::macos::keychain::SecKeychain::user_interaction_allowed()?,
+        "Keychain user interaction is disabled in this process"
+    );
+    let credentials = read_item(instance).context(
+        "authorize this executable to read the existing Keychain entry; approve the macOS prompt if shown",
+    )?;
+    drop(credentials);
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
