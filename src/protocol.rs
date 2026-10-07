@@ -2,7 +2,7 @@ use anyhow::{ensure, Context, Result};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 pub const LIMIT: usize = 65536;
-pub const BRIDGE_VERSION: &str = "3";
+pub const BRIDGE_VERSION: &str = "4";
 
 pub fn encode(fields: &[&str]) -> Result<Vec<u8>> {
     ensure!(

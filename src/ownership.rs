@@ -76,6 +76,17 @@ pub fn read_private(path: &Path) -> Result<Vec<u8>> {
 
 pub struct Lock(File);
 
+#[derive(Debug)]
+pub struct LockHeld;
+
+impl std::fmt::Display for LockHeld {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("instance is already supervised (ownership lock held)")
+    }
+}
+
+impl std::error::Error for LockHeld {}
+
 impl Lock {
     pub fn acquire(path: &Path) -> Result<Self> {
         let file = OpenOptions::new()
@@ -92,10 +103,13 @@ impl Lock {
             "lock must be a private file owned by you"
         );
         let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-        ensure!(
-            rc == 0,
-            "instance is already supervised (ownership lock held)"
-        );
+        if rc != 0 {
+            let error = std::io::Error::last_os_error();
+            if error.kind() == std::io::ErrorKind::WouldBlock {
+                return Err(LockHeld.into());
+            }
+            return Err(error).context("acquire instance ownership lock");
+        }
         Ok(Self(file))
     }
 }

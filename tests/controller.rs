@@ -22,6 +22,50 @@ fn command(config: &Path) -> Command {
     command
 }
 
+#[test]
+fn upgrade_status_is_readable_while_an_updater_holds_its_lock() {
+    use std::os::{fd::AsRawFd, unix::fs::PermissionsExt};
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("config.toml");
+    let contents = include_str!("../config.example.toml")
+        .replace("~/.local/share/ibkr-gateway-rs", &dir.path().join("state").to_string_lossy());
+    fs::write(&config, contents).unwrap();
+    let root = dir.path().join("state/.upgrades");
+    fs::create_dir_all(root.join("paper")).unwrap();
+    let lock = fs::File::create(root.join("upgrade.lock")).unwrap();
+    assert_eq!(unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) }, 0);
+    let journal = root.join("paper/state.json");
+    fs::write(&journal, r#"{"phase":"installing","reason":"fixture","transaction":null}"#).unwrap();
+    fs::set_permissions(&journal, fs::Permissions::from_mode(0o600)).unwrap();
+    let output = command(&config)
+        .args(["upgrade", "status", "--instance", "paper"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["phase"], "installing");
+    assert_eq!(value["instance"], "paper");
+    assert!(value.get("transaction").is_none());
+}
+
+#[test]
+fn unattended_upgrade_never_targets_live_or_accepts_arbitrary_download_urls() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("config.toml");
+    fs::write(&config, include_str!("../config.example.toml")).unwrap();
+    let live = command(&config)
+        .args(["upgrade", "run", "--instance", "live"])
+        .output()
+        .unwrap();
+    assert!(!live.status.success());
+    assert!(String::from_utf8_lossy(&live.stderr).contains("Paper qualification profile"));
+    let url = command(&config)
+        .args(["upgrade", "check", "--instance", "paper", "--channel", "https://example.invalid/installer"])
+        .output()
+        .unwrap();
+    assert_eq!(url.status.code(), Some(2));
+}
+
 fn status(config: &Path, instance: &str) -> serde_json::Value {
     let deadline = Instant::now() + Duration::from_secs(8);
     loop {

@@ -10,17 +10,17 @@ use std::{
 };
 use tokio::process::Command;
 
-fn label(instance: &str) -> String {
+pub(crate) fn label(instance: &str) -> String {
     format!("dev.ibkr.gatewayctl.{instance}")
 }
 
-fn file(instance: &str) -> Result<PathBuf> {
+pub(crate) fn file(instance: &str) -> Result<PathBuf> {
     Ok(config::home()?
         .join("Library/LaunchAgents")
         .join(format!("{}.plist", label(instance))))
 }
 
-fn xml(value: &str) -> String {
+pub(crate) fn xml(value: &str) -> String {
     value
         .replace('&', "&amp;")
         .replace('<', "&lt;")
@@ -130,7 +130,7 @@ pub async fn load(instance: &str) -> Result<()> {
     Ok(())
 }
 
-pub async fn uninstall(instance: &str) -> Result<()> {
+pub async fn unload(instance: &str) -> Result<()> {
     let target = format!("gui/{}/{}", unsafe { libc::geteuid() }, label(instance));
     if job_present(&target).await? {
         let output = tokio::time::timeout(
@@ -147,6 +147,11 @@ pub async fn uninstall(instance: &str) -> Result<()> {
             String::from_utf8_lossy(&output.stderr)
         );
     }
+    Ok(())
+}
+
+pub async fn uninstall(instance: &str) -> Result<()> {
+    unload(instance).await?;
     match fs::remove_file(file(instance)?) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -168,7 +173,7 @@ fn job_output_present(output: &std::process::Output) -> Result<bool> {
     bail!("launchd job inspection failed: {error}")
 }
 
-async fn job_present(target: &str) -> Result<bool> {
+pub(crate) async fn job_present(target: &str) -> Result<bool> {
     let output = tokio::time::timeout(
         Duration::from_secs(3),
         Command::new("/bin/launchctl")

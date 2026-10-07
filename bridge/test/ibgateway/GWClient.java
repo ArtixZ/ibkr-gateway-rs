@@ -41,6 +41,7 @@ public final class GWClient {
     private static boolean validationShown;
     private static boolean restartNoticeShown;
     private static JDialog connectionNotice;
+    private static JDialog versionNotice;
 
     private GWClient() {}
 
@@ -133,6 +134,17 @@ public final class GWClient {
                     SwingUtilities.invokeLater(() -> connectionDialog(frame, kind));
                 }
             }
+            for (String kind : new String[] {"notice", "required"}) {
+                Path trigger = settings.resolve("fixture-version-" + kind);
+                if (Files.exists(trigger)) {
+                    try {
+                        Files.delete(trigger);
+                    } catch (IOException error) {
+                        throw new IllegalStateException("Cannot consume fixture version event", error);
+                    }
+                    SwingUtilities.invokeLater(() -> versionDialog(frame, kind.equals("required")));
+                }
+            }
             if (!frame.isDisplayable()) {
                 ((Timer) event.getSource()).stop();
             }
@@ -175,6 +187,42 @@ public final class GWClient {
                 challenge.setVisible(true);
                 simulatedUser.stop();
         }
+        if (Boolean.getBoolean("gatewayctl.fixture.version-notice")) {
+            SwingUtilities.invokeLater(() -> versionDialog(frame, false));
+        }
+    }
+
+    private static void versionDialog(JFrame owner, boolean required) {
+        if (!required && versionNotice != null) {
+            versionNotice.setVisible(true);
+            return;
+        }
+        JDialog dialog = new JDialog(owner, "IBKR Gateway", true);
+        if (!required) {
+            versionNotice = dialog;
+        }
+        String message = required
+                ? "This version is no longer supported. You must upgrade before logging in."
+                : "The version of the application you are running, 1044.1, needs to be upgraded, "
+                        + "as it will be desupported on 20990101. "
+                        + "The minimum supported version at that time will be 1050.1. "
+                        + "The new version can be downloaded <a href=\"https://example.invalid/\">here</a>.";
+        JEditorPane content = new JEditorPane("text/html", "<html>" + message + "</html>");
+        content.setEditable(false);
+        dialog.add(content, BorderLayout.CENTER);
+        JButton ok = new JButton("OK");
+        ok.addActionListener(event -> {
+            try {
+                Files.writeString(settings.resolve(
+                        "fixture-version-" + (required ? "required" : "notice") + "-clicked"), "clicked");
+            } catch (IOException error) {
+                throw new IllegalStateException("Cannot record fixture version action", error);
+            }
+            SwingUtilities.invokeLater(dialog::dispose);
+        });
+        dialog.add(ok, BorderLayout.SOUTH);
+        dialog.setSize(450, 200);
+        dialog.setVisible(true);
     }
 
     private static void connectionDialog(JFrame owner, String kind) {

@@ -8,6 +8,7 @@ mod protocol;
 mod service;
 mod state;
 mod supervisor;
+mod upgrade;
 
 use anyhow::{ensure, Context, Result};
 use clap::{Parser, Subcommand};
@@ -111,6 +112,11 @@ enum Action {
         #[command(subcommand)]
         action: ServiceAction,
     },
+    /// Check, apply, or schedule verified IB Gateway vendor upgrades.
+    Upgrade {
+        #[command(subcommand)]
+        action: upgrade::Action,
+    },
 }
 
 #[derive(Subcommand)]
@@ -168,6 +174,7 @@ async fn execute(cli: Cli) -> Result<()> {
     match cli.action {
         Action::Init => unreachable!(),
         Action::Validate => println!("Configuration valid; no Gateway was started."),
+        Action::Upgrade { action } => upgrade::execute(config, &path, action).await?,
         Action::Doctor => {
             ownership::private_dir(&config.state_dir)?;
             let dir = config.state_dir.join("doctor");

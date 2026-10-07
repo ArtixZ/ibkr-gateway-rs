@@ -469,16 +469,29 @@ impl Supervisor {
 
     fn deliver_notification(&mut self) -> Result<()> {
         self.next_notification = Instant::now() + Duration::from_secs(60);
-        match self.log.transition(
-            self.state.phase.as_str(),
-            &self.state.reason,
-            self.state.notification_human,
-        ) {
-            Ok(()) => {
-                self.state.notification_pending = false;
-                self.save()?;
+        if self.state.notification_pending {
+            match self.log.transition(
+                self.state.phase.as_str(),
+                &self.state.reason,
+                self.state.notification_human,
+            ) {
+                Ok(()) => {
+                    self.state.notification_pending = false;
+                    self.save()?;
+                }
+                Err(error) => self.log.log("notification_error", &format!("{error:#}"))?,
             }
-            Err(error) => self.log.log("notification_error", &format!("{error:#}"))?,
+        }
+        if self.state.upgrade_notification_pending {
+            match self.log.upgrade_notice() {
+                Ok(()) => {
+                    self.state.upgrade_notification_pending = false;
+                    self.save()?;
+                }
+                Err(error) => self
+                    .log
+                    .log("upgrade_notification_error", &format!("{error:#}"))?,
+            }
         }
         Ok(())
     }
@@ -496,7 +509,8 @@ impl Supervisor {
             "bridge_connected": self.bridge.is_some(),
             "ui_pulse_age_secs": self.last_pulse.elapsed().as_secs(),
             "api_orders_enabled": self.writable && self.state.phase == Phase::Ready,
-            "notification_pending": self.state.notification_pending,
+            "notification_pending": self.state.notification_pending || self.state.upgrade_notification_pending,
+            "upgrade_recommended": self.state.upgrade_recommended,
             "read_only_enrollment": self.enrollment.is_some(),
         })
         .to_string()
@@ -771,6 +785,7 @@ impl Supervisor {
         let identity = Identity::read(pid)?.context("Gateway exited during startup")?;
         self.state.owner = Some(identity);
         self.state.launch_pending = false;
+        self.state.upgrade_recommended = false;
         self.state.resume_session = None;
         self.resuming_session = restart.is_some();
         self.child = Some(child);
@@ -1081,6 +1096,15 @@ impl Supervisor {
                     self.last_pulse = Instant::now();
                     return Ok(());
                 }
+                if fields == ["UPGRADE_NOTICE"] {
+                    if !self.state.upgrade_recommended {
+                        self.state.upgrade_recommended = true;
+                        self.state.upgrade_notification_pending = true;
+                        self.save()?;
+                        self.deliver_notification()?;
+                    }
+                    return Ok(());
+                }
                 if fields.first().map(String::as_str) == Some("DIALOG") && fields.len() == 3 {
                     let name = self.name.clone();
                     match timeout(
@@ -1255,7 +1279,9 @@ impl Supervisor {
                 )?;
             }
         }
-        if self.state.notification_pending && now >= self.next_notification {
+        if (self.state.notification_pending || self.state.upgrade_notification_pending)
+            && now >= self.next_notification
+        {
             self.deliver_notification()?;
         }
         if now >= self.next_heartbeat {
@@ -1494,6 +1520,118 @@ async fn native_output(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn version_retirement_notice_preserves_lifecycle_and_warns_once() {
+        for phase in [
+            Phase::Authenticating,
+            Phase::AwaitingMfa,
+            Phase::Ready,
+            Phase::NativeRestarting,
+            Phase::NeedsAttention,
+        ] {
+            let mut f = fixture();
+            let owner = f.supervisor.state.owner.clone();
+            f.supervisor.state.phase = phase;
+            f.supervisor.state.reason = "existing_lifecycle_reason".into();
+            f.supervisor.healthy_since = Some(Instant::now());
+            let healthy_since = f.supervisor.healthy_since;
+            for _ in 0..2 {
+                f.supervisor
+                    .event(Event::Bridge(
+                        "fixture-generation".into(),
+                        vec!["UPGRADE_NOTICE".into()],
+                    ))
+                    .await
+                    .unwrap();
+            }
+            assert_eq!(f.supervisor.state.phase, phase);
+            assert_eq!(f.supervisor.state.reason, "existing_lifecycle_reason");
+            assert_eq!(f.supervisor.state.owner, owner);
+            assert_eq!(f.supervisor.state.restarts, 0);
+            assert_eq!(f.supervisor.state.login_recovery_attempts, 0);
+            assert_eq!(f.supervisor.healthy_since, healthy_since);
+            assert!(f.supervisor.configured);
+            assert!(f.supervisor.state.upgrade_recommended);
+            assert!(!f.supervisor.state.upgrade_notification_pending);
+            let restored: State = serde_json::from_slice(
+                &ownership::read_private(&f.supervisor.dir.join("state.json")).unwrap(),
+            )
+            .unwrap();
+            assert!(restored.upgrade_recommended);
+            let status: serde_json::Value =
+                serde_json::from_str(&f.supervisor.public_status()).unwrap();
+            assert_eq!(status["upgrade_recommended"], true);
+            let logs = fs::read_to_string(f.supervisor.dir.join("logs/controller.jsonl")).unwrap();
+            assert_eq!(logs.lines().count(), 1);
+            assert!(logs.contains("\"kind\":\"upgrade_notice\""));
+        }
+    }
+
+    #[tokio::test]
+    async fn version_retirement_notice_keeps_native_restart_available() {
+        let mut f = fixture();
+        let (stream, mut receiver) = UnixStream::pair().unwrap();
+        f.supervisor.bridge = Some(stream.into_split().1);
+        f.supervisor
+            .event(Event::Bridge(
+                "fixture-generation".into(),
+                vec!["UPGRADE_NOTICE".into()],
+            ))
+            .await
+            .unwrap();
+        f.supervisor.control("RESTART").await.unwrap();
+        assert_eq!(protocol::read(&mut receiver).await.unwrap(), ["RESTART"]);
+        assert_eq!(f.supervisor.state.phase, Phase::NativeRestarting);
+        assert_eq!(f.supervisor.state.restarts, 0);
+    }
+
+    #[tokio::test]
+    async fn version_retirement_notification_failure_is_persisted_and_retried() {
+        let mut f = fixture();
+        let events = f.supervisor.dir.join("missing-events");
+        f.supervisor.log = Events::new("paper", &f.supervisor.dir, Some(events.clone())).unwrap();
+        f.supervisor
+            .event(Event::Bridge(
+                "fixture-generation".into(),
+                vec!["UPGRADE_NOTICE".into()],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(f.supervisor.state.phase, Phase::Ready);
+        let status: serde_json::Value =
+            serde_json::from_str(&f.supervisor.public_status()).unwrap();
+        assert_eq!(status["notification_pending"], true);
+        f.supervisor.state = serde_json::from_slice(
+            &ownership::read_private(&f.supervisor.dir.join("state.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(f.supervisor.state.upgrade_notification_pending);
+        fs::create_dir(&events).unwrap();
+        f.supervisor.next_notification = Instant::now() - Duration::from_secs(1);
+        f.supervisor.next_probe = Instant::now() + Duration::from_secs(3600);
+        f.supervisor.next_heartbeat = Instant::now() + Duration::from_secs(3600);
+        let (sender, _) = mpsc::channel(1);
+        f.supervisor.tick(sender).await.unwrap();
+        assert!(!f.supervisor.state.upgrade_notification_pending);
+        assert!(f.supervisor.state.upgrade_recommended);
+        assert_eq!(f.supervisor.state.phase, Phase::Ready);
+        assert_eq!(fs::read_dir(events).unwrap().count(), 1);
+    }
+
+    #[tokio::test]
+    async fn version_retirement_notice_from_an_old_generation_is_ignored() {
+        let mut f = fixture();
+        f.supervisor
+            .event(Event::Bridge(
+                "old-generation".into(),
+                vec!["UPGRADE_NOTICE".into()],
+            ))
+            .await
+            .unwrap();
+        assert!(!f.supervisor.state.upgrade_recommended);
+        assert!(!f.supervisor.state.upgrade_notification_pending);
+    }
 
     #[tokio::test]
     async fn known_connection_notice_keeps_native_recovery_available() {
@@ -1898,6 +2036,7 @@ mod tests {
         std::os::unix::fs::symlink(std::env::current_exe().unwrap(), bin.join("java")).unwrap();
         f.supervisor.state.owner = None;
         f.supervisor.state.launch_pending = true;
+        f.supervisor.state.upgrade_recommended = true;
         let (left, mut right) = UnixStream::pair().unwrap();
         protocol::write(
             &mut right,
@@ -1918,6 +2057,7 @@ mod tests {
             std::process::id() as i32
         );
         assert!(!f.supervisor.state.launch_pending);
+        assert!(f.supervisor.state.upgrade_recommended);
         f.supervisor.reader.take().unwrap().abort();
     }
 

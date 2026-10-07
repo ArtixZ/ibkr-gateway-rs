@@ -56,6 +56,10 @@ pub struct State {
     #[serde(default)]
     pub notification_human: bool,
     #[serde(default)]
+    pub upgrade_recommended: bool,
+    #[serde(default)]
+    pub upgrade_notification_pending: bool,
+    #[serde(default)]
     pub resume_session: Option<String>,
     #[serde(default)]
     pub launch_pending: bool,
@@ -79,6 +83,8 @@ impl State {
             backoff_until_unix: 0,
             notification_pending: false,
             notification_human: false,
+            upgrade_recommended: false,
+            upgrade_notification_pending: false,
             resume_session: None,
             launch_pending: false,
             native_restart_due_unix: None,
@@ -102,6 +108,21 @@ impl State {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn version_retirement_fields_are_optional_in_existing_state() {
+        let config: crate::config::Config =
+            toml::from_str(include_str!("../config.example.toml")).unwrap();
+        let state = State::new(config.instances["paper"].clone());
+        let mut legacy = serde_json::to_value(state).unwrap();
+        let fields = legacy.as_object_mut().unwrap();
+        fields.remove("upgrade_recommended");
+        fields.remove("upgrade_notification_pending");
+        let restored: State = serde_json::from_value(legacy).unwrap();
+        assert!(!restored.upgrade_recommended);
+        assert!(!restored.upgrade_notification_pending);
+    }
+
     #[test]
     fn restart_budget_is_bounded_and_persistent() {
         let config: crate::config::Config =
