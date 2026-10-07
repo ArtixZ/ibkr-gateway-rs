@@ -109,10 +109,19 @@ the login, so API clients do not need the username or password.
 | `gatewayctl stop --instance live` | Stop only the live Gateway |
 | `gatewayctl resume --instance live` | Resume after resolving an intervention |
 | `gatewayctl diagnose --instance live` | Write redacted UI diagnostics to its private log |
+| `gatewayctl upgrade check --instance paper` | Check the official signed Gateway release |
+| `gatewayctl upgrade install --instance paper --at 05:00` | Enable unattended Paper vendor upgrades |
 
 Daily native restarts can reuse a valid session. Fresh authentication,
 expired tokens, and broker security checks may still require MFA. Unknown
 dialogs and session conflicts pause automation rather than force a takeover.
+
+Optional vendor upgrades download IBKR's notarized installer, install
+side-by-side, and reuse the existing Keychain-authorized supervisor. Routine
+upgrades run in the configured local maintenance window; version-retirement
+incidents are checked every 15 minutes. Other instances must be stopped.
+See [automatic upgrades](docs/operations.md#automatic-vendor-upgrades) for
+rollback, MFA, and compatibility safeguards.
 
 **[Operations guide](docs/operations.md)** covers Keychain updates, enrollment,
 service removal, logs, and troubleshooting.

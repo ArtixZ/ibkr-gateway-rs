@@ -90,7 +90,7 @@ fn vendor_entry_and_restart_interface_can_be_inspected_without_login() {
     );
     assert!(String::from_utf8(output.stdout)
         .unwrap()
-        .contains("bridge_protocol=3"));
+        .contains("bridge_protocol=4"));
 }
 
 async fn read(stream: &mut UnixStream) -> Vec<String> {
@@ -126,6 +126,7 @@ struct GuiOptions {
     config_timeout: u64,
     config_error: bool,
     config_stall: bool,
+    version_notice: bool,
 }
 
 impl GuiOptions {
@@ -136,6 +137,7 @@ impl GuiOptions {
             config_timeout: 30,
             config_error: false,
             config_stall: false,
+            version_notice: false,
         }
     }
 }
@@ -204,6 +206,10 @@ impl Gui {
                 "-Dgatewayctl.fixture.config-stall={}",
                 options.config_stall
             ))
+            .arg(format!(
+                "-Dgatewayctl.fixture.version-notice={}",
+                options.version_notice
+            ))
             .arg(format!("-Dgatewayctl.runtime={}", root.display()));
         command
             .arg(format!("-DjtsConfigDir={}", settings.display()))
@@ -233,7 +239,7 @@ impl Gui {
         let hello = timeout(Duration::from_secs(5), read(&mut stream))
             .await
             .unwrap();
-        assert_eq!(&hello[..2], ["HELLO", "3"]);
+        assert_eq!(&hello[..2], ["HELLO", "4"]);
         write(
             &mut stream,
             &[
@@ -279,6 +285,22 @@ impl Gui {
             &["LOGIN", "fixture-user", "fixture-secret"],
         )
         .await;
+    }
+
+    async fn upgrade_notice(&mut self) {
+        timeout(Duration::from_secs(40), async {
+            loop {
+                let fields = read(&mut self.stream).await;
+                if fields == ["UPGRADE_NOTICE"] {
+                    return;
+                }
+                if fields.first().map(String::as_str) == Some("STATE") {
+                    assert_ne!(fields[1], "needs_attention", "{fields:?}");
+                }
+            }
+        })
+        .await
+        .expect("version retirement advisory was not reported");
     }
 
     fn user_action(&self, name: &str) {
@@ -477,5 +499,139 @@ async fn synthetic_gui_configuration_stall_is_explicit() {
         gui.state("needs_attention").await[2],
         "configuration_stalled"
     );
+    gui.stop().await;
+}
+
+#[tokio::test]
+#[ignore = "requires Aqua; synthetic broker disconnect prompt"]
+async fn synthetic_gui_relogin_requests_supervised_login_without_reclaiming_a_session() {
+    let mut gui = Gui::new(GuiOptions::for_mode("paper")).await;
+    gui.login().await;
+    gui.state("configured_readonly").await;
+    gui.user_action("fixture-connection-relogin");
+    assert_eq!(
+        gui.state("resume_login_required").await[2],
+        "broker_connection_requires_fresh_login"
+    );
+    assert!(!gui
+        .settings
+        .join("fixture-connection-relogin-clicked")
+        .exists());
+    gui.stop().await;
+}
+
+#[tokio::test]
+#[ignore = "requires Aqua; synthetic informational server disconnect"]
+async fn synthetic_gui_server_disconnect_notice_does_not_latch_intervention() {
+    let mut gui = Gui::new(GuiOptions::for_mode("paper")).await;
+    gui.login().await;
+    gui.state("configured_readonly").await;
+    gui.user_action("fixture-connection-notice");
+    gui.state("connection_lost").await;
+    gui.await_file("fixture-connection-notice-clicked").await;
+    gui.state("configured_readonly").await;
+    std::fs::remove_file(gui.settings.join("fixture-connection-notice-clicked")).unwrap();
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+    gui.user_action("fixture-connection-notice");
+    gui.state("connection_lost").await;
+    gui.await_file("fixture-connection-notice-clicked").await;
+    gui.state("configured_readonly").await;
+    gui.stop().await;
+}
+
+#[tokio::test]
+#[ignore = "requires Aqua; synthetic version retirement advisory at startup"]
+async fn synthetic_gui_version_retirement_notice_allows_configuration_and_native_restart() {
+    let mut options = GuiOptions::for_mode("paper");
+    options.version_notice = true;
+    let mut gui = Gui::new(options).await;
+    gui.login().await;
+    gui.upgrade_notice().await;
+    gui.await_file("fixture-version-notice-clicked").await;
+    gui.exercise_ready_and_restart().await;
+}
+
+#[tokio::test]
+#[ignore = "requires Aqua; synthetic repeated version retirement advisory"]
+async fn synthetic_gui_version_retirement_notice_does_not_latch_a_running_gateway() {
+    let mut gui = Gui::new(GuiOptions::for_mode("paper")).await;
+    gui.login().await;
+    gui.state("configured_readonly").await;
+    for _ in 0..2 {
+        gui.user_action("fixture-version-notice");
+        gui.upgrade_notice().await;
+        gui.await_file("fixture-version-notice-clicked").await;
+        std::fs::remove_file(gui.settings.join("fixture-version-notice-clicked")).unwrap();
+        tokio::time::sleep(Duration::from_millis(1200)).await;
+    }
+    write(&mut gui.stream, &["RESTART"]).await;
+    gui.state("native_restarting").await;
+    gui.stop().await;
+}
+
+#[tokio::test]
+#[ignore = "requires Aqua; an already unsupported version must not be dismissed"]
+async fn synthetic_gui_version_retirement_handler_does_not_accept_a_required_upgrade() {
+    let mut gui = Gui::new(GuiOptions::for_mode("paper")).await;
+    gui.login().await;
+    gui.state("configured_readonly").await;
+    gui.user_action("fixture-version-required");
+    assert_eq!(
+        gui.state("needs_attention").await[2],
+        "unrecognized_modal_dialog"
+    );
+    assert!(!gui.settings.join("fixture-version-required-clicked").exists());
+    gui.stop().await;
+}
+
+#[tokio::test]
+#[ignore = "requires Aqua; a version retirement advisory cannot approve MFA"]
+async fn synthetic_gui_version_retirement_notice_preserves_mfa_approval() {
+    let mut gui = Gui::new(GuiOptions::for_mode("live")).await;
+    gui.login().await;
+    gui.state("awaiting_mfa").await;
+    gui.user_action("fixture-version-notice");
+    gui.upgrade_notice().await;
+    gui.await_file("fixture-version-notice-clicked").await;
+    assert!(!gui.settings.join("fixture-configuration-opened").exists());
+    gui.user_action("fixture-user-approved");
+    gui.state("configured_readonly").await;
+    gui.stop().await;
+}
+
+#[tokio::test]
+#[ignore = "requires Aqua; synthetic competing session remains protected"]
+async fn synthetic_gui_existing_session_is_never_reclaimed_by_connection_recovery() {
+    let mut gui = Gui::new(GuiOptions::for_mode("paper")).await;
+    gui.login().await;
+    gui.state("configured_readonly").await;
+    gui.user_action("fixture-connection-conflict");
+    assert_eq!(
+        gui.state("needs_attention").await[2],
+        "authentication_or_session_conflict"
+    );
+    assert!(!gui
+        .settings
+        .join("fixture-connection-conflict-clicked")
+        .exists());
+    gui.stop().await;
+}
+
+#[tokio::test]
+#[ignore = "requires Aqua; connection recovery must not resubmit an MFA login"]
+async fn synthetic_gui_disconnect_during_mfa_does_not_start_another_login() {
+    let mut gui = Gui::new(GuiOptions::for_mode("live")).await;
+    gui.login().await;
+    gui.state("awaiting_mfa").await;
+    gui.user_action("fixture-connection-notice");
+    assert_eq!(
+        gui.state("needs_attention").await[2],
+        "connection_lost_during_mfa"
+    );
+    assert!(!gui
+        .settings
+        .join("fixture-connection-notice-clicked")
+        .exists());
+    assert!(!gui.settings.join("fixture-configuration-opened").exists());
     gui.stop().await;
 }

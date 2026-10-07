@@ -135,6 +135,58 @@ impl Events {
         append(&directory.join(format!("events-{date}.jsonl")), &event)
     }
 
+    pub fn upgrade_notice(&self) -> Result<()> {
+        let message = "IBKR warned that this Gateway version will be desupported. \
+            Plan a software upgrade before the vendor deadline; the advisory does not block this session.";
+        self.log("upgrade_notice", message)?;
+        let Some(directory) = &self.tradebus else {
+            return Ok(());
+        };
+        ensure!(
+            directory.is_dir(),
+            "configured tradebus event directory does not exist"
+        );
+        let now = OffsetDateTime::now_utc();
+        let event = json!({
+            "ts": now.format(&Rfc3339)?,
+            "source": "gateway", "kind": "notify", "severity": "warn",
+            "title": format!("Gateway {}: software upgrade recommended", self.instance),
+            "body": message,
+            "data": {
+                "instance": self.instance,
+                "human_notify": true
+            }
+        });
+        let date = local_day(now)?;
+        append(&directory.join(format!("events-{date}.jsonl")), &event)
+    }
+
+    pub fn upgrade_status(&self, phase: &str, message: &str, human: bool) -> Result<()> {
+        self.log("vendor_upgrade", &format!("{phase}: {message}"))?;
+        if !human && phase != "ready" {
+            return Ok(());
+        }
+        let Some(directory) = &self.tradebus else {
+            return Ok(());
+        };
+        ensure!(directory.is_dir(), "configured tradebus event directory does not exist");
+        let now = OffsetDateTime::now_utc();
+        let event = json!({
+            "ts": now.format(&Rfc3339)?,
+            "source": "gateway", "kind": "notify",
+            "severity": if human { "error" } else { "ok" },
+            "title": format!("Gateway {} upgrade: {phase}", self.instance),
+            "body": message,
+            "data": {
+                "instance": self.instance, "human_notify": human,
+                "watchtower_slug": format!("ibkr-gateway-{}-upgrade", self.instance),
+                "watchtower_oneshot": "true",
+                "watchtower_status": if human { "fail" } else { "ok" }
+            }
+        });
+        append(&directory.join(format!("events-{}.jsonl", local_day(now)?)), &event)
+    }
+
     pub fn native_log(&self, text: &str) -> Result<()> {
         if allowed_native_line(text) {
             self.log("gateway", text)
@@ -171,6 +223,41 @@ fn append(path: &Path, event: &serde_json::Value) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn version_retirement_notice_does_not_report_or_clear_a_session_outage() {
+        let dir = tempfile::tempdir().unwrap();
+        let e = Events::new("paper", dir.path(), Some(dir.path().into())).unwrap();
+        e.upgrade_notice().unwrap();
+        e.transition("ready", "verified", false).unwrap();
+        let event_file = fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| {
+                path.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with("events-")
+            })
+            .unwrap();
+        let events: Vec<serde_json::Value> = fs::read_to_string(event_file)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0]["severity"], "warn");
+        assert_eq!(events[0]["data"]["human_notify"], true);
+        assert_eq!(events[0]["data"]["instance"], "paper");
+        assert!(events[0]["data"].get("watchtower_slug").is_none());
+        assert!(events[0]["data"].get("watchtower_status").is_none());
+        assert_eq!(
+            events[1]["data"]["watchtower_slug"],
+            "ibkr-gateway-paper-session"
+        );
+        assert_eq!(events[1]["data"]["watchtower_status"], "ok");
+    }
+
     #[test]
     fn native_restart_journal_failure_remains_visible() {
         assert!(allowed_native_line(
